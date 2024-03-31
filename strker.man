@@ -1,0 +1,329 @@
+.nf
+NAME:
+	strker - search an image for streaks
+
+SYNOPSIS:
+	strker diffim image [options]
+
+DESCRIPTION: 
+
+	strker applies a tophat matched filter to an image in order to detect
+	and characterize faint streaks.  A tophat filter is characterized by a
+	length ("-len L") and an angle ("-phi A"); strker computes the cross
+	correlation between a tophat kernel and a difference image and
+	examines the result for significant detections.
+
+	strker works on a difference image but also uses the corresponding,
+	non-differenced image as well to evaluate the significance of
+	detections.  A bright star may leave substantial artifacts in the
+	difference, but its contributions are suppressed by dividing by a
+	spatially varying RMS noise from the image with the star.  NOTE that
+        this "image" is used for variance so it must include any sky background
+        that was acquired along with celestial objects.
+
+        Difference image pixels which are set to -31415 and image pixels
+        which are set to 0 are ignored, and that is the preferred method
+        for eliminating bad pixels from consideration instead of setting
+        them to some nominal value.
+
+	There are a number of innovative features that makes strker fast and
+	effective.
+
+	 * strker has a fast application of the tophat correlation which
+	   exploits shear to implement the tilt angle.  It also pre-bins
+	   ("-bin N") and pre-smooths ("-smooth S") the image to reduce the
+	   number of pixels that need to be considered.
+
+	 * strker also computes the results of the tophat modulated by cosine
+	   and sine, because a point source when correlated with these is
+	   different than a streaked source.  Subtracting the quadrature sum
+	   of the sin/cos correlations from the tophat correlation tend to
+	   make a point source contribution disappear and leave a streaked
+	   source unchanged.  The number of wavelengths of the sin/cos has
+	   a default of 1 over the tophat length ("-nlam N").
+
+	 * strker uses tphot to find peaks in the match-filtered significance
+	   image because tphot is very fast and effective.
+	 
+	The basic stages carried out by strker are
+
+	 1. Read the image and the difference image
+
+	 2. Clip, bin, and smooth these images
+
+	 3. Determine a spatially varying background for the difference image
+	    and subtract it (disable with "-bkg").
+
+	 4. Step through phi angles such that the end of the kernel moves by
+	    2 pixels ("-cstep C") in the binned image every iteration.  Making
+	    C small may enhance detectability at the cost of more compute time.
+
+	 5. Cross-correlate the difference image with the tophat (T),
+            cosine (C), and sine (S) kernels.
+
+	 6. Form a "sigma image" as [T-sqrt(C*C+S*S)]/RMS.  This "sigma image"
+            is also divided by "-nsquash N" (default 4) powers of the tophat
+            image divided by the local background to suppress false alarms
+            from incompletely subtracted stars.  If the image you supply is
+            the image itself as opposed to a wallpaper/template image you may
+            need to disable this with "-nsquash 0" to avoid wiping out bright
+            trails. The 'unsquashable' threshold (see below) is also intended
+            to help preserve bright trails.
+
+	 7. Run tphot to detect significant excursions.  The search parameters
+	    are currently hard-wired into sigma_srch().  This output is
+	    available if desired ("-tph fname").
+
+	 8. Convert each detection into a "whisker", a chord that touches the
+	    circle that circumscribes the image at some azimuth and some
+	    distance.  These whiskers are available if desired ("-whisk fname").
+
+	 9. Group the whiskers and compute average streak parameters to serve as
+	    initial conditions for fitting in the difference.  These parameters
+	    are available if desired ("-grp fname").  Note that the lengths will
+	    typically be very rough because they derive from tphot in Waussian
+	    mode.  This grouping can be disabled with "-nowhisk".
+
+	10. Fit each streak using these initial conditions using tphot in trail
+	    mode.
+ 
+	The final streak fit output normally goes to stdout, but can be
+	redirected ("-strk fname").  The columns are
+
+	  x0,y0 = center of the streak [TSK convention]
+	  peak,dpeak = fitted peak value of the streak and uncertainty
+	  sky = fitted sky value near the streak
+	  flux,dflux = aggregate flux in the streak and uncertainty
+	  length = streak length (in excess of the cross PSF, 0 for no streak)
+	  minor = cross-streak FWHM
+	  phi = angle of the streak relative to the x-axis
+	  err = error returned by tphot (normally 0)
+          niter = number of iterations
+	  grp = whisker group number (which can be matched to whisker output)
+	  ngrp = number of whiskers contributing to the group
+	  chin = chi^2/N for the tphot fit
+
+	As always tphot calculates the flux two different ways, as an
+	aperture sum over a lozenge that surrounds the streak and as a
+	profile fit.  The flux from the profile fit is approximately
+
+	  flux ~ 1.25 * peak * length * minor
+
+	The aperture flux is generally quite accurate for bright streaks
+	(provided the length was correctly fitted) but always has more noise
+	than the fit, but the fit flux may have errors because the streak may
+	not have constant brightness, and the (ap-fit) correction for the
+	integral may be quite complex because the integral of the cross-track
+	and along-track profile may also depend on things like seeing
+	variations.
+
+	The number of detections that go into each group is an indication of
+	how significant the object may be.  A chance alignment of noise will
+	typically only produce output at a single value for phi, whereas a
+	real streak may cause multiple triggers at each phi, and may produce
+	a result at multiple values of phi.
+
+	Note that it is possible for the same streak to be detected multiple
+	times at different phi or positions, and for the whisker grouping
+	to fail to identify them.  Therefore the same streak may appear
+	multiple times in the output: the user should be prepared to identify
+	nearly identical streaks and act accordingly.
+
+
+OPTIONS:
+	-len L		[(pix) default 34]
+	  Matched filter with length L pixels.  Try all distinct angles phi
+	  if phi is not specified.
+
+	-strk fname	[default "-" (stdout)]
+	  Write final streak parameters in tphot format for the detections
+	  to fname.
+
+	-star fname	[default not]
+	  Provide a catalog of stars with ra, dec, x, y, m for assessing
+	  probability that a streak might be a burn or bleed.
+
+	-badata x	[default not]
+	  Set all difference image pixels at the badata value of -31415 to
+	  a value of x.  Using x=0 may be a very good idea...
+
+	-bin N		[default 2]
+	  Bin the images by N prior to analysis.
+
+	-cstep C	[(pix) default 1.0]
+	  Sample (binned) circumference every C when testing all phi.
+
+	-phi A		[(deg) default try all]
+	  Matched filter at angle A [deg] CCW from the x axis.
+
+	-nlam N		[default 1]
+	  Number of sin/cos periods over the matched filter length.
+
+	-smooth S	[(pix) default 1.0]
+	  Smooth the binned image by Gaussian of sigma S prior to analysis.
+
+	-sig S          [default 5]
+	-srchsig S	[default 5]
+	  Search sigma image to a peak of height S
+	  
+	-fixpsf
+	-freepsf	[default]
+	  Fix the tphot fit to a PSF fixed at len,phi?  Default is free
+	  unless both len,phi are specified on the command line. If len
+          and phi are specified, fixed psf becomes the default but you
+          can still use the -freepsf flag to force a free psf fit. The
+          effect of this is that the specified len,phi define the
+          cross-correlation kernel, but the post-trigger fitting, in
+          particular by tphot, is allowed to adjust the trail length, etc.
+
+	-subarray x0,nx,y0,ny	[default not]
+	  Restrict search to a box starting at x0,y0 (0-based) of size nx,ny.
+	  Pick nx and ny with a lot of small factors in order to improve the
+	  background subtraction: nx=600 is much better than nx=599.
+
+	-nowhisk
+	  Do not try to consolidate tphot sigma detections into groups
+
+
+	-grp fname	[default NULL]
+	  Write grouped streak parameters (x,y,len,phi) from the whiskers
+	  to fname.  These serve as initial conditions to a trail fit from
+	  the image, and 'len' may be quite crude.
+
+	-tph fname	[default NULL]
+	  Write tphot search output found from the sigma images at various
+	  phi values to fname.
+
+	-whisk fname	[default NULL]
+	  Write whisker parameters for each detection from the sigma images
+	  to fname.
+
+	-dfile fname	[default NULL]
+	  Name of a diagnostic image, which is specified by "-dcs N".
+
+	-dcs N		[default 0]
+	  Select which diagnostic image to write if "-dfile fname" is
+	  specified: 0,1,2,3,4,5,6 for sigma, image tophat, difference tophat,
+	  cos, image, diff, img_sky.
+
+
+	-clip min,max	[(pix) default -1000,80000]
+	  Clip pixels in the image outside of this range to this range.
+
+	-CLIP min,max	[(pix) default -1000,80000]
+	  Clip pixels in the difference outside of this range to this range.
+
+        -dmax		[default 1.0]
+          Along-streak duplicate-matching distance, in units of 
+          quadrature-sum streak length, approximately (it's complicated).
+          Large values can cause streaks to consume one another through
+          too-aggressive duplicate matching. Small values result in too
+          many duplicate detections and increase runtimes. Has no effect
+          if the -nowhisk flag is set.
+
+        -maxtraillen	[(pix) default 1000.0]
+          Maximum trail length probed by trailendfind; hence, maximum
+          trail length that might be fed to tphot as an input guess.
+          Reducing it can help tphot run faster, and avoid problematic
+          fits to long trails that might be curved.
+          Takes effect ONLY if the -checklength flag IS set.
+
+        -timeout	[(seconds) default forever]
+          Maximum permitted runtime for strker in seconds. If strker 
+          times out before beginning the final tphot analysis, the output
+          file will be empty except for the header. However, if the 
+          timeout occurs during the final tphot analysis (which is often 
+          the longest step), a properly formated output file will be 
+          written with as many streaks as were analyzed before the time 
+          limit. To make such a partial file as useful as possible, 
+          strker analyzes streaks in order of decreasing flux: hence, if
+          you don't get them all, you at least get the brightest ones.
+
+        -maxdets        [default 1000000]
+          Maximum number of streaks analyzed at the final, most
+          time-consuming step using tphot. This option is provided as an
+          alternative to -timeout, with the advantage that with
+          maxdets, you will always get a non-empty output file. The
+          disadvantage of -maxdets relative to -timeout is that some
+          streaks take much longer than others to analyze, so runtimes
+          could still sometimes be very long.
+
+	-hlen H		[(pix) default 8]
+	  Matched filter with length bin*(2*H+1) pixels.  Try all distinct
+	  angles phi if phi is not specified.  Alternative to "-len L".
+
+	-bkg		[default background subtraction is ON]
+	  Disable background subtraction from the difference image.
+          Somewhat confusingly, setting the -bkg flag turns OFF the
+          background subtraction, which is on by default.
+         
+        -oldsigsrch	[default do not use]
+          Use old (pre Feb 2021) style of searching to detect candidate
+          sources in the sigma image. New style also uses the DIFF image
+          and attains higher sensitivity.
+
+        -checkwidthoff	[default checkwidth is ON]
+          Turn off identification and rejection of 'fuzzy' streaks prior to 
+          calling tphot. It is recommended to leave checkwidth on, because it 
+          can save a lot of time, and produces no significant loss of 
+          sensitivity to real objects unless there's something pretty weird 
+          about them. However, this flag is provided to let the user choose
+          sensitivity to weird streaks at the cost of longer runtime and more
+          bogus detections, if desired.
+
+        -checklengthoff	[default checklength is ON]
+          Turn off the attempt to measure the length of sufficiently bright 
+          streaks prior to calling tphot. It is recommended to leave
+          checklength on, because it increases quality of measurements
+          for bright streaks much longer than the kernal, at the cost of
+          only a slight increase in runtime and possible slight reduction 
+          in sensitivity. However, this flag is provided to let the user
+          choose a small increase in sensitivity and speed at the cost of 
+          measurement accuracy for long streaks, if desired.
+
+	-nsquash N	[default 4]
+	  Divide the sigma image by N powers of (image/background) to suppress
+          false alarms from star residuals.
+
+	-unsquashable 	[default 50.0]
+	  Do not apply squashing (i.e. nsquash) to pixes in the sigma image
+          that are brighter than this threshold. Intended to preserve rare,
+          very bright trails from getting squashed, while still enabling a 
+          nsquash setting that powerfully cleans up numerous faint bogus 
+          detections.
+
+	-verb
+	-VERB
+	-verbose N	[N>2]
+	  Request ever higher levels of verbosity.
+
+EXAMPLES:
+	Search an image for streaks, saving intermediate output files
+
+	  obs=01a58756o0401o
+	  strker /atlas/diff/${obs:0:3}/${obs:3:5}/$obs.diff.fz \
+	         /atlas/red/${obs:0:3}/${obs:3:5}/$obs.fits.fz
+
+	Provide a bright star catalog for burn trails that affect streak classification
+
+          obsrefcat.sh $obs mlim=15 > /tmp/$obs.rc2
+	  strker /atlas/diff/${obs:0:3}/${obs:3:5}/$obs.diff.fz \
+	         /atlas/red/${obs:0:3}/${obs:3:5}/$obs.fits.fz -star $obs.rc2
+
+        Full diagnostic output files
+
+          strker /atlas/{diff,red}/${obs:0:3}/${obs:3:5}/$obs.*.fz -srchsig 12 -VERB
+	     -strk /tmp/$obs.strk     -tph /tmp/$obs.tph \
+	     -whisk /tmp/$obs.whisk   -grp /tmp/$obs.grp \
+	     -dfile /tmp/$obs.sig
+
+BUGS AND CHANGES:
+	191017 - first release
+
+SEE ALSO:
+	tphot
+
+AUTHOR:
+	John Tonry
+
+VERSION:
